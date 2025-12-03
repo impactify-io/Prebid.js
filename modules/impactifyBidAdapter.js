@@ -71,15 +71,13 @@ const helpers = {
     return 2;
   },
 
-  createOrtbImpBannerObj(bid, size) {
-    const sizes = size.split('x');
+  createOrtbImpBannerObj(bid, bannerObj) {
+    const format = [];
+    bannerObj.sizes.forEach(size => format.push({ w: size[0], h: size[1] }));
 
     return {
       id: 'banner-' + bid.bidId,
-      format: [{
-        w: parseInt(sizes[0]),
-        h: parseInt(sizes[1])
-      }]
+      format
     }
   },
 
@@ -177,6 +175,7 @@ function createOpenRtbRequest(validBidRequests, bidderRequest) {
   // Create imps with bids
   validBidRequests.forEach((bid) => {
     const bannerObj = deepAccess(bid.mediaTypes, `banner`);
+    const videoObj = deepAccess(bid.mediaTypes, `video`);
 
     const imp = {
       id: bid.bidId,
@@ -184,11 +183,11 @@ function createOpenRtbRequest(validBidRequests, bidderRequest) {
       ext: helpers.getExtParamsFromBid(bid)
     };
 
-    if (bannerObj && typeof imp.ext.impactify.size === 'string') {
+    if (bannerObj) {
       imp.banner = {
-        ...helpers.createOrtbImpBannerObj(bid, imp.ext.impactify.size)
+        ...helpers.createOrtbImpBannerObj(bid, bannerObj)
       }
-    } else {
+    } else if (videoObj){
       imp.video = {
         ...helpers.createOrtbImpVideoObj(bid)
       }
