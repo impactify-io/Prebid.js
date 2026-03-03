@@ -123,7 +123,13 @@ function createOpenRtbRequest(validBidRequests, bidderRequest) {
     validBidRequests,
     cur: [DEFAULT_CURRENCY],
     imp: [],
-    source: { tid: bidderRequest.ortb2?.source?.tid }
+    source: { tid: bidderRequest.ortb2?.source?.tid },
+        ext: {
+      impactify: {
+        formatOutput: 'json',
+        debug: false
+      }
+    }
   };
 
   // Get the url parameters
