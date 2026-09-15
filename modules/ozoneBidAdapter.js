@@ -19,6 +19,12 @@ import { Renderer } from '../src/Renderer.js';
 import { getRefererInfo } from '../src/refererDetection.js';
 import { toOrtb25 } from '../libraries/ortb2.5Translator/translator.js';
 
+/**
+ * @typedef {import('../src/adapters/bidderFactory.js').BidRequest} BidRequest
+ * @typedef {import('./ozoneBidAdapter.d.ts').OzoneBidderParams} OzoneBidderParams
+ * @typedef {BidRequest & {params: OzoneBidderParams}} OzoneBidRequest
+ */
+
 const BIDDER_CODE = 'ozone';
 const ORIGIN = 'https://elb.the-ozone-project.com';
 const AUCTIONURI = '/openrtb2/auction';
@@ -65,6 +71,10 @@ export const spec = {
     }
     return false;
   },
+  /**
+   * @param {OzoneBidRequest} bid
+   * @returns {boolean}
+   */
   isBidRequestValid(bid) {
     const vf = 'VALIDATION FAILED';
     logInfo('isBidRequestValid : ', config.getConfig(), bid);
@@ -412,7 +422,7 @@ export const spec = {
       banner: deepAccess(bidRequestRef, 'mediaTypes.banner.sizes', null),
       video: deepAccess(bidRequestRef, 'mediaTypes.video.playerSize', null),
       native: deepAccess(bidRequestRef, 'mediaTypes.native.image.sizes', null)
-    }
+    };
     logInfo('getFloorObjectForAuction mediaTypesSizes : ', mediaTypesSizes);
     const ret = {};
     if (mediaTypesSizes.banner) {
@@ -644,7 +654,7 @@ export const spec = {
   getVideoContextForBidId(bidId, arrBids) {
     const requestBid = this.getBidRequestForBidId(bidId, arrBids);
     if (requestBid != null) {
-      return deepAccess(requestBid, 'mediaTypes.video.context', 'unknown')
+      return deepAccess(requestBid, 'mediaTypes.video.context', 'unknown');
     }
     return null;
   },

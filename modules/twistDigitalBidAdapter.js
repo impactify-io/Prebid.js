@@ -2,8 +2,14 @@ import { registerBidder } from '../src/adapters/bidderFactory.js';
 import { BANNER, VIDEO } from '../src/mediaTypes.js';
 import { getStorageManager } from '../src/storageManager.js';
 import {
-  isBidRequestValid, createInterpretResponseFn, createUserSyncGetter, createBuildRequestsFn, onBidWon, onBidBillable
+  isBidRequestValid, createInterpretResponseFn, createUserSyncGetter, createBuildRequestsFn, onBidWon, onBidBillable,
+  onAdRenderSucceeded,
+  onBidViewable
 } from '../libraries/vidazooUtils/bidderUtils.js';
+
+/**
+ * @typedef {import('./twistDigitalBidAdapter.d.ts').TwistDigitalBidRequestParams} TwistDigitalBidRequestParams
+ */
 
 const GVLID = 1292;
 const DEFAULT_SUB_DOMAIN = 'exchange';
@@ -35,6 +41,8 @@ export const spec = {
   getUserSyncs,
   onBidWon,
   onBidBillable,
+  onAdRenderSucceeded,
+  onBidViewable
 };
 
 registerBidder(spec);
