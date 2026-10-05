@@ -179,6 +179,26 @@ describe('ImpactifyAdapter', function () {
       expect(request.method).to.equal('POST');
     });
 
+    [
+      { timeout: undefined, expected: 1000 },
+      { timeout: 0, expected: 1000 },
+      { timeout: 500, expected: 1000 },
+      { timeout: 1000, expected: 1000 },
+      { timeout: 2500, expected: 2500 }
+    ].forEach(({ timeout, expected }) => {
+      it(`should send tmax ${expected} when bidderRequest.timeout is ${timeout}`, function () {
+        const request = spec.buildRequests(videoBidRequests, { ...videoBidderRequest, timeout });
+
+        expect(JSON.parse(request.data).tmax).to.equal(expected);
+      });
+    });
+
+    it('should default tmax to 1000 when bidderRequest is missing', function () {
+      const request = spec.buildRequests(videoBidRequests);
+
+      expect(JSON.parse(request.data).tmax).to.equal(1000);
+    });
+
     it('should set instream context and player size for video imps', function () {
       const request = spec.buildRequests(videoBidRequests, videoBidderRequest);
       const payload = JSON.parse(request.data);
