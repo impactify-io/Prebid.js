@@ -4,7 +4,6 @@ import * as utils from 'src/utils.js';
 import * as percentInView from 'libraries/percentInView/percentInView.js';
 import sinon from 'sinon';
 import { getGlobal } from '../../../src/prebidGlobal.js';
-import { config } from '../../../src/config.js';
 import { server } from '../../mocks/xhr.js';
 
 const DEFAULT_CURRENCY = 'USD';
@@ -251,6 +250,22 @@ describe('ImpactifyAdapter', function () {
       const request = spec.buildRequests(videoBidRequests);
 
       expect(JSON.parse(request.data).tmax).to.equal(400);
+    });
+
+    [0, 1].forEach((test) => {
+      it(`should retain the _checkPrebid=${test} request override after conversion`, function () {
+        const originalUrl = window.location.href;
+        try {
+          window.history.replaceState(null, '', `${window.location.pathname}?_checkPrebid=${test}`);
+          videoBidderRequest.ortb2 = { test: 1 - test };
+
+          const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
+
+          expect(request.test).to.equal(test);
+        } finally {
+          window.history.replaceState(null, '', originalUrl);
+        }
+      });
     });
 
     it('should set instream context and player size for video imps', function () {
@@ -575,7 +590,7 @@ describe('ImpactifyAdapter', function () {
       });
     });
 
-    it('should include schain, eids, gdpr and usp in ortb request', function () {
+    it('should preserve canonical OpenRTB privacy and first-party data alongside Impactify fields', function () {
       const bid = {
         bidId: '1',
         adUnitCode: 'adunit-code',
@@ -589,46 +604,53 @@ describe('ImpactifyAdapter', function () {
             sizes: [[300, 250]]
           }
         },
-        ortb2: {
-          source: {
-            ext: {
-              schain: { ver: '1.0', complete: 1, nodes: [] }
-            }
-          }
-        },
         userIdAsEids: [{ source: 'test.com', uids: [{ id: 'abc', atype: 1 }] }]
       };
-
+      const ortb2 = {
+        regs: { coppa: 1, gpp: 'DBABMA~CPXxRfAPXxRfAAfKABENB-CgAAAAAAAAAAYgAAAAAAAA', gpp_sid: [7, 8, 5], ext: { gdpr: 1, us_privacy: '1YNN', gpc: '1', custom: false } },
+        user: { ext: { consent: 'consent123', eids: bid.userIdAsEids, data: { publisherSegment: 'news' } } },
+        device: { ua: 'publisher-agent', dnt: 1, language: 'fr', ext: { custom: 0 } },
+        site: { page: 'https://publisher.com/canonical', publisher: { name: 'Publisher' } },
+        source: { tid: 'permitted-tid', ext: { schain: { ver: '1.0', complete: 1, nodes: [] }, custom: 'source-data' } },
+        ext: { custom: 'request-data', impactify: { custom: 'bidder-data' } }
+      };
+      bid.ortb2 = ortb2;
       const bidderRequest = {
         bidderRequestId: 'req-1',
         refererInfo: { page: 'https://publisher.com/page' },
-        gdprConsent: { gdprApplies: true, consentString: 'consent123' },
-        uspConsent: '1YNN'
+        ortb2
       };
 
-      const request = JSON.parse(spec.buildRequests([bid], bidderRequest).data);
+      const result = spec.buildRequests([bid], bidderRequest);
+      const request = JSON.parse(result.data);
 
-      expect(request.source.ext.schain).to.deep.equal(bid.ortb2.source.ext.schain);
-      expect(request.user.ext.eids).to.deep.equal(bid.userIdAsEids);
-      expect(request.user.ext.consent).to.equal('consent123');
-      expect(request.regs.ext.gdpr).to.equal(1);
-      expect(request.regs.ext.us_privacy).to.equal('1YNN');
+      expect(result.data).to.be.a('string');
+      expect(request.id).to.equal('req-1');
+      expect(request.cur).to.deep.equal(['USD']);
+      expect(request.regs).to.deep.equal(ortb2.regs);
+      expect(request.user).to.deep.equal(ortb2.user);
+      expect(request.device).to.deep.include(ortb2.device);
+      expect(request.source).to.deep.equal(ortb2.source);
+      expect(request.site).to.deep.equal({ ...ortb2.site, publisher: { name: 'Publisher', id: 'pub-1' } });
+      expect(request.ext.custom).to.equal('request-data');
+      expect(request.ext.impactify).to.include({ custom: 'bidder-data', integration: 'pbjs' });
+      expect(request.validBidRequests).to.deep.equal([bid]);
     });
 
-    [true, false].forEach((gdprApplies) => {
-      it(`should preserve the CMP's explicit gdprApplies=${gdprApplies} signal`, function () {
-        videoBidderRequest.gdprConsent = { gdprApplies, consentString: gdprData.consentString };
+    [1, 0].forEach((gdpr) => {
+      it(`should preserve the canonical GDPR applicability value ${gdpr}`, function () {
+        videoBidderRequest.ortb2 = { regs: { ext: { gdpr } }, user: { ext: { consent: gdprData.consentString } } };
 
         const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
 
-        expect(request.regs.ext.gdpr).to.equal(Number(gdprApplies));
+        expect(request.regs.ext.gdpr).to.equal(gdpr);
         expect(request.user.ext.consent).to.equal(gdprData.consentString);
       });
     });
 
-    [undefined, { consentString: gdprData.consentString }].forEach((gdprConsent) => {
-      it(`should not declare GDPR inapplicable when ${gdprConsent ? 'the CMP has not determined applicability' : 'no CMP data is available'}`, function () {
-        videoBidderRequest.gdprConsent = gdprConsent;
+    [undefined, { user: { ext: { consent: gdprData.consentString } } }].forEach((ortb2) => {
+      it(`should not declare GDPR inapplicable when ${ortb2 ? 'the CMP has not determined applicability' : 'no CMP data is available'}`, function () {
+        videoBidderRequest.ortb2 = ortb2;
 
         const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
 
@@ -637,17 +659,157 @@ describe('ImpactifyAdapter', function () {
       });
     });
 
-    it('should forward COPPA when enabled by the publisher', function () {
-      const previousCoppa = config.getConfig('coppa');
-      try {
-        config.setConfig({ coppa: true });
+    it('should preserve empty strings, empty sections, false and zero privacy values through serialization', function () {
+      videoBidderRequest.ortb2 = {
+        regs: { coppa: 0, gpp: '', gpp_sid: [], ext: { gdpr: 0, us_privacy: '', gpc: false } },
+        user: { ext: { consent: '' } },
+        device: { dnt: 0 }
+      };
+
+      const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
+
+      expect(request.regs).to.deep.equal(videoBidderRequest.ortb2.regs);
+      expect(request.user.ext.consent).to.equal('');
+      expect(request.device.dnt).to.equal(0);
+    });
+
+    [undefined, {}].forEach((ortb2) => {
+      it(`should not invent privacy signals for ${ortb2 ? 'empty' : 'missing'} OpenRTB data`, function () {
+        videoBidderRequest.ortb2 = ortb2;
 
         const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
 
-        expect(request.regs.coppa).to.equal(1);
-      } finally {
-        config.setConfig({ coppa: previousCoppa });
+        expect(request).to.not.have.property('regs');
+        expect(request.user?.ext || {}).to.not.have.property('consent');
+        expect(request.device || {}).to.not.have.property('dnt');
+      });
+    });
+
+    it('should keep canonical privacy values when legacy consent objects disagree', function () {
+      videoBidderRequest.ortb2 = {
+        regs: { coppa: 0, gpp: 'canonical-gpp', gpp_sid: [5, 7, 8], ext: { gdpr: 0, us_privacy: '1YNN', gpc: '1' } },
+        user: { ext: { consent: '' } },
+        device: { dnt: 1 }
+      };
+      videoBidderRequest.gdprConsent = { gdprApplies: true, consentString: 'legacy-consent' };
+      videoBidderRequest.uspConsent = '1NNN';
+      videoBidderRequest.gppConsent = { gppString: 'legacy-gpp', applicableSections: [9] };
+
+      const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
+
+      expect(request.regs).to.deep.equal(videoBidderRequest.ortb2.regs);
+      expect(request.user.ext.consent).to.equal('');
+      expect(request.device.dnt).to.equal(1);
+    });
+
+    it('should not reconstruct consent absent from the canonical OpenRTB data', function () {
+      videoBidderRequest.ortb2 = {};
+      videoBidderRequest.gdprConsent = { gdprApplies: true, consentString: 'legacy-consent' };
+      videoBidderRequest.uspConsent = '1YNN';
+      videoBidderRequest.gppConsent = { gppString: 'legacy-gpp', applicableSections: [7] };
+
+      const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
+
+      expect(request).to.not.have.property('regs');
+      expect(request.user?.ext || {}).to.not.have.property('consent');
+    });
+
+    [
+      { ua: 'Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)', expected: 5 },
+      { ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)', expected: 4 },
+      { ua: 'Mozilla/5.0 (X11; Linux x86_64)', expected: 2 }
+    ].forEach(({ ua, expected }) => {
+      it(`should derive device type ${expected} from the canonical user agent only when missing`, function () {
+        videoBidderRequest.ortb2 = { device: { ua } };
+
+        const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
+
+        expect(request.device.ua).to.equal(ua);
+        expect(request.device.devicetype).to.equal(expected);
+      });
+    });
+
+    it('should preserve explicitly supplied device defaults, including zero and empty values', function () {
+      const device = { ua: '', devicetype: 0, w: 0, h: 0, js: 0, language: '', dnt: 0, ext: { custom: false } };
+      videoBidderRequest.ortb2 = { device };
+
+      const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
+
+      expect(request.device).to.deep.equal(device);
+    });
+
+    ['app', 'dooh'].forEach((section) => {
+      it(`should retain a canonical ${section} request without adding site data`, function () {
+        videoBidderRequest.ortb2 = { [section]: { id: 'canonical-client', publisher: { id: 'canonical-publisher' } } };
+        videoBidderRequest.refererInfo = { page: 'https://ignored.example.com' };
+
+        const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
+
+        expect(request[section]).to.deep.equal(videoBidderRequest.ortb2[section]);
+        expect(request).to.not.have.property('site');
+      });
+    });
+
+    it('should give canonical nested data precedence over bid-level fallbacks, including empty EIDs', function () {
+      videoBidderRequest.ortb2 = {
+        source: { ext: { schain: { ver: '1.0', complete: 0, nodes: [] }, custom: 'source' } },
+        user: { ext: { eids: [], consent: '', custom: 'user' } },
+        site: { page: '', publisher: { id: 'canonical-publisher' } }
+      };
+      videoBidRequests[0].ortb2 = { source: { ext: { schain: { ver: '1.0', complete: 1, nodes: [{ asi: 'legacy.example.com', sid: 'legacy' }] } } } };
+      videoBidderRequest.refererInfo = { page: 'https://legacy.example.com' };
+
+      const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
+
+      expect(request.source).to.deep.equal(videoBidderRequest.ortb2.source);
+      expect(request.user).to.deep.equal(videoBidderRequest.ortb2.user);
+      expect(request.site).to.deep.equal(videoBidderRequest.ortb2.site);
+    });
+
+    it('should retain existing schain and EID fallbacks without replacing sibling OpenRTB fields', function () {
+      const schain = { ver: '1.0', complete: 1, nodes: [] };
+      videoBidRequests[0].ortb2 = { source: { ext: { schain } } };
+      videoBidderRequest.ortb2 = { source: { ext: { custom: 'source' } }, user: { ext: { consent: 'canonical-consent' } } };
+
+      const request = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
+
+      expect(request.source.ext).to.deep.equal({ custom: 'source', schain });
+      expect(request.user.ext).to.deep.equal({ consent: 'canonical-consent', eids: videoBidRequests[0].userIdAsEids });
+    });
+
+    it('should build independent requests from frozen publisher data without mutating inputs', function () {
+      function freeze(value) {
+        if (value && typeof value === 'object') {
+          Object.values(value).forEach(freeze);
+          Object.freeze(value);
+        }
+        return value;
       }
+      const ortb2 = {
+        regs: { coppa: 0, gpp: 'frozen-gpp', gpp_sid: [7, 8, 5], ext: { gdpr: 0, gpc: '1' } },
+        user: { ext: { consent: '', eids: videoBidRequests[0].userIdAsEids } },
+        device: { dnt: 1 },
+        source: { ext: { schain: { ver: '1.0', complete: 1, nodes: [] } } },
+        ext: { impactify: { custom: 'untouched' } }
+      };
+      videoBidderRequest.ortb2 = ortb2;
+      videoBidRequests[0].ortb2 = ortb2;
+      const bidsBefore = utils.deepClone(videoBidRequests);
+      const requestBefore = utils.deepClone(videoBidderRequest);
+      freeze(videoBidRequests);
+      freeze(videoBidderRequest);
+
+      const first = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
+      const second = JSON.parse(spec.buildRequests(videoBidRequests, videoBidderRequest).data);
+      const unrelated = JSON.parse(spec.buildRequests([utils.deepClone(defaultVideoBidRequests[0])], { bidderRequestId: 'another-request', ortb2: {} }).data);
+
+      expect(first).to.deep.equal(second);
+      expect(first.regs).to.deep.equal(ortb2.regs);
+      expect(first.ext.impactify).to.include({ integration: 'pbjs', custom: 'untouched' });
+      expect(unrelated).to.not.have.property('regs');
+      expect(unrelated.user?.ext || {}).to.not.have.property('consent');
+      expect(videoBidRequests).to.deep.equal(bidsBefore);
+      expect(videoBidderRequest).to.deep.equal(requestBefore);
     });
   });
   describe('interpretResponse', function () {
@@ -1171,6 +1333,90 @@ describe('ImpactifyAdapter', function () {
       const url = new URL(result[0].url);
       expect(url.searchParams.get('us_privacy')).to.equal('1YNN');
       expect(url.searchParams.has('gdpr')).to.equal(false);
+    });
+
+    it('should forward GDPR, legacy USP and every supplied GPP section without corrupting query values', function () {
+      const gdprConsent = { gdprApplies: false, consentString: 'tc+string/with=&symbols' };
+      const uspConsent = 'usp+string=&';
+      const gppConsent = { gppString: 'gpp+string/with=&symbols', applicableSections: [7, 8, 5, 23] };
+      const result = spec.getUserSyncs({ iframeEnabled: true }, [{ body: validResponse }], gdprConsent, uspConsent, gppConsent);
+      const params = new URL(result[0].url).searchParams;
+
+      expect(params.get('gdpr')).to.equal('0');
+      expect(params.get('gdpr_consent')).to.equal(gdprConsent.consentString);
+      expect(params.get('us_privacy')).to.equal(uspConsent);
+      expect(params.get('gpp')).to.equal(gppConsent.gppString);
+      expect(params.get('gpp_sid')).to.equal('7,8,5,23');
+      expect(Array.from(params.keys())).to.have.length(5);
+      expect(gppConsent.applicableSections).to.deep.equal([7, 8, 5, 23]);
+    });
+
+    it('should forward GPP without requiring GDPR or legacy USP data', function () {
+      const result = spec.getUserSyncs({ iframeEnabled: true }, [{ body: validResponse }], undefined, undefined, { gppString: 'gpp-only', applicableSections: [7] });
+      const params = new URL(result[0].url).searchParams;
+
+      expect(params.get('gpp')).to.equal('gpp-only');
+      expect(params.get('gpp_sid')).to.equal('7');
+      expect(params.has('gdpr')).to.equal(false);
+      expect(params.has('gdpr_consent')).to.equal(false);
+      expect(params.has('us_privacy')).to.equal(false);
+    });
+
+    it('should preserve explicit empty consent values and an empty applicable-sections list', function () {
+      const result = spec.getUserSyncs({ iframeEnabled: true }, [{ body: validResponse }], { gdprApplies: false, consentString: '' }, '', { gppString: '', applicableSections: [] });
+      const params = new URL(result[0].url).searchParams;
+
+      expect(params.get('gdpr')).to.equal('0');
+      ['gdpr_consent', 'us_privacy', 'gpp', 'gpp_sid'].forEach((name) => {
+        expect(params.has(name), name).to.equal(true);
+        expect(params.get(name), name).to.equal('');
+      });
+    });
+
+    [
+      { consent: { gppString: 'gpp-without-sections' }, expected: { gpp: 'gpp-without-sections' } },
+      { consent: { applicableSections: [-1] }, expected: { gpp_sid: '-1' } },
+      { consent: { gppString: null, applicableSections: null }, expected: {} },
+      { consent: {}, expected: {} }
+    ].forEach(({ consent, expected }) => {
+      it(`should preserve partial GPP data ${JSON.stringify(consent)} without inventing fields`, function () {
+        const result = spec.getUserSyncs({ iframeEnabled: true }, [{ body: validResponse }], undefined, undefined, consent);
+
+        expect(Object.fromEntries(new URL(result[0].url).searchParams)).to.deep.equal(expected);
+      });
+    });
+
+    it('should skip iframe syncs when the supplied COPPA flag is true', function () {
+      const result = spec.getUserSyncs({ iframeEnabled: true }, [{ body: validResponse }], gdprData, '1YNN', { gppString: 'gpp', applicableSections: [7] }, true);
+
+      expect(result).to.deep.equal([]);
+    });
+
+    [false, undefined].forEach((coppa) => {
+      it(`should retain permitted iframe syncs when COPPA is ${coppa}`, function () {
+        const result = spec.getUserSyncs({ iframeEnabled: true }, [{ body: validResponse }], undefined, undefined, undefined, coppa);
+
+        expect(result).to.deep.equal([{ type: 'iframe', url: ORIGIN + '/static/cookie_sync.html' }]);
+      });
+    });
+
+    [undefined, gdprData].forEach((gdprConsent) => {
+      it(`should create a valid debug query ${gdprConsent ? 'alongside consent' : 'without consent'}`, function () {
+        const originalUrl = window.location.href;
+        try {
+          window.history.replaceState(null, '', `${window.location.pathname}?pbs_debug=true`);
+
+          const result = spec.getUserSyncs({ iframeEnabled: true }, [{ body: validResponse }], gdprConsent);
+          const url = new URL(result[0].url);
+
+          expect(url.pathname).to.equal('/static/cookie_sync.html');
+          expect(url.searchParams.get('pbs_debug')).to.equal('true');
+          expect(url.searchParams.has('gdpr')).to.equal(!!gdprConsent);
+          if (gdprConsent) expect(url.searchParams.get('gdpr_consent')).to.equal(gdprConsent.consentString);
+        } finally {
+          window.history.replaceState(null, '', originalUrl);
+        }
+      });
     });
   });
 

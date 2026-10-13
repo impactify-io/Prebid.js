@@ -1,17 +1,19 @@
 'use strict';
 import { deepAccess, deepSetValue, getWinDimensions, isPlainObject, getWindowTop } from '../src/utils.js';
 import { registerBidder } from '../src/adapters/bidderFactory.js';
-import { config } from '../src/config.js';
 import { noCredsAjax as ajax } from '../src/ajax.js';
 import { getStorageManager } from '../src/storageManager.js';
 import { isViewabilityMeasurable, getViewability } from '../libraries/percentInView/percentInView.js';
+import { ortbConverter } from '../libraries/ortbConverter/converter.js';
 
 /**
- * @typedef {import('../src/adapters/bidderFactory.js').BidRequest} BidRequest
- * @typedef {import('../src/adapters/bidderFactory.js').Bid} Bid
+ * @typedef {import('./impactifyBidAdapter.d.ts').ImpactifyBidderParams} ImpactifyBidderParams
+ * @typedef {import('../src/adapterManager.js').BidRequest<'impactify'>} BidRequest
+ * @typedef {import('../src/bidfactory.js').BidResponse} BidResponse
+ * @typedef {import('../src/adapters/bidderFactory.js').BidderSpec<'impactify'>} BidderSpec
  * @typedef {import('../src/adapters/bidderFactory.js').ServerResponse} ServerResponse
- * @typedef {import('../src/adapters/bidderFactory.js').SyncOptions} SyncOptions
- * @typedef {import('../src/adapters/bidderFactory.js').UserSync} UserSync
+ * @typedef {Parameters<NonNullable<BidderSpec['getUserSyncs']>>[0]} SyncOptions
+ * @typedef {import('../src/userSync.js').UserSync} UserSync
  */
 
 const BIDDER_CODE = 'impactify';
@@ -24,7 +26,6 @@ const LOGGER_URI = 'https://logger.impactify.media';
 const AUCTION_URI = '/bidder';
 const COOKIE_SYNC_URI = '/static/cookie_sync.html';
 const GVL_ID = 606;
-const GET_CONFIG = config.getConfig;
 export const STORAGE = getStorageManager({ gvlid: GVL_ID, bidderCode: BIDDER_CODE });
 export const STORAGE_KEY = '_im_str';
 const VIDEO_PARAMS = [
@@ -149,12 +150,12 @@ const helpers = {
     }
   },
 
-  getDeviceType() {
+  getDeviceType(userAgent = '') {
     // OpenRTB Device type
-    if ((/ipad|android 3.0|xoom|sch-i800|playbook|tablet|kindle/i.test(navigator.userAgent.toLowerCase()))) {
+    if ((/ipad|android 3.0|xoom|sch-i800|playbook|tablet|kindle/i.test(userAgent))) {
       return 5;
     }
-    if ((/iphone|ipod|android|blackberry|opera|mini|windows\sce|palm|smartphone|iemobile/i.test(navigator.userAgent.toLowerCase()))) {
+    if ((/iphone|ipod|android|blackberry|opera|mini|windows\sce|palm|smartphone|iemobile/i.test(userAgent))) {
       return 4;
     }
     return 2;
@@ -216,82 +217,9 @@ const helpers = {
 
 };
 
-/**
- * Create an OpenRTB formated object from prebid payload
- * @param validBidRequests
- * @param bidderRequest
- * @returns {{cur: string[], validBidRequests, id, source: {tid}, imp: *[]}}
- */
-function createOpenRtbRequest(validBidRequests, bidderRequest) {
-  // Create request and set imp bids inside
-  const request = {
-    id: bidderRequest?.bidderRequestId,
-    validBidRequests,
-    cur: [DEFAULT_CURRENCY],
-    tmax: Math.max(bidderRequest?.timeout || 400, 400),
-    imp: [],
-    source: { tid: bidderRequest?.ortb2?.source?.tid },
-    ext: {
-      impactify: {
-        integration: 'pbjs',
-        storage: helpers.getImStrFromLocalStorage()
-      }
-    }
-  };
-
-  // Get the url parameters
-  const queryString = window?.location?.search;
-  const urlParams = new URLSearchParams(queryString);
-  const checkPrebid = urlParams.get('_checkPrebid');
-
-  // Force impactify debugging parameter if present
-  if (checkPrebid != null) {
-    request.test = Number(checkPrebid);
-  }
-
-  // Set SChain in request
-  const schain = deepAccess(validBidRequests, '0.ortb2.source.ext.schain');
-  if (schain) request.source.ext = { schain: schain };
-
-  // Set Eids
-  const eids = deepAccess(validBidRequests, '0.userIdAsEids');
-  if (eids && eids.length) {
-    deepSetValue(request, 'user.ext.eids', eids);
-  }
-
-  // Set device/user/site
-  if (!request.device) request.device = {};
-  if (!request.site) request.site = {};
-  request.device = {
-    w: getWinDimensions().innerWidth,
-    h: getWinDimensions().innerHeight,
-    devicetype: helpers.getDeviceType(),
-    ua: navigator?.userAgent,
-    js: 1,
-    dnt: 0,
-    language: ((navigator?.language || navigator?.userLanguage || '').split('-'))[0] || 'en',
-  };
-  const pageUrl = deepAccess(bidderRequest, 'refererInfo.page');
-  const accountId = deepAccess(validBidRequests?.[0], 'params.accountId');
-  deepSetValue(request, 'site.page', pageUrl);
-  deepSetValue(request, 'site.publisher.id', accountId);
-
-  // Handle privacy settings for GDPR/CCPA/COPPA
-  if (bidderRequest?.gdprConsent) {
-    if (typeof bidderRequest.gdprConsent.gdprApplies === 'boolean') {
-      deepSetValue(request, 'regs.ext.gdpr', bidderRequest.gdprConsent.gdprApplies ? 1 : 0);
-    }
-    deepSetValue(request, 'user.ext.consent', bidderRequest.gdprConsent.consentString);
-  }
-
-  if (GET_CONFIG('coppa') === true) deepSetValue(request, 'regs.coppa', 1);
-
-  if (bidderRequest?.uspConsent) {
-    deepSetValue(request, 'regs.ext.us_privacy', bidderRequest.uspConsent);
-  }
-
-  // Create imps with bids
-  validBidRequests.forEach((bid) => {
+const converter = ortbConverter({
+  // Keep Impactify's impression format and floor lookup independent of optional processors.
+  imp(buildImp, bid) {
     const bannerObj = deepAccess(bid.mediaTypes, `banner`);
     const videoObj = deepAccess(bid.mediaTypes, `video`);
 
@@ -320,15 +248,55 @@ function createOpenRtbRequest(validBidRequests, bidderRequest) {
       }
     }
 
-    request.imp.push(imp);
-  });
+    return imp;
+  },
+  request(buildRequest, imps, bidderRequest, context) {
+    // Core enrichment and activity controls have already populated and filtered ortb2.
+    const request = buildRequest(imps, bidderRequest, context);
+    const validBidRequests = context.bidRequests;
+    Object.assign(request, {
+      id: bidderRequest.bidderRequestId,
+      validBidRequests,
+      cur: [DEFAULT_CURRENCY],
+      tmax: Math.max(bidderRequest.timeout || 400, 400)
+    });
+    deepSetValue(request, 'ext.impactify.integration', 'pbjs');
+    deepSetValue(request, 'ext.impactify.storage', helpers.getImStrFromLocalStorage());
 
-  return request;
-}
+    const checkPrebid = new URLSearchParams(window?.location?.search).get('_checkPrebid');
+    if (checkPrebid != null) {
+      request.test = Number(checkPrebid);
+    }
+
+    // Keep canonical values when filling adapter-specific defaults.
+    const setDefault = (path, value) => {
+      if (value !== undefined && deepAccess(request, path) === undefined) {
+        deepSetValue(request, path, value);
+      }
+    };
+    setDefault('source', {});
+    setDefault('source.ext.schain', deepAccess(validBidRequests, '0.ortb2.source.ext.schain'));
+    const eids = deepAccess(validBidRequests, '0.userIdAsEids');
+    if (eids?.length) {
+      setDefault('user.ext.eids', eids);
+    }
+
+    setDefault('device.w', getWinDimensions().innerWidth);
+    setDefault('device.h', getWinDimensions().innerHeight);
+    setDefault('device.devicetype', helpers.getDeviceType(request.device?.ua));
+    setDefault('device.js', 1);
+    setDefault('device.language', 'en');
+    if (!request.app && !request.dooh) {
+      setDefault('site.page', bidderRequest.refererInfo?.page);
+      setDefault('site.publisher.id', validBidRequests[0]?.params.accountId);
+    }
+    return request;
+  }
+});
 
 /**
  * Export BidderSpec type object and register it to Prebid
- * @type {{supportedMediaTypes: string[], interpretResponse: ((function(ServerResponse, *): Bid[])|*), code: string, aliases: string[], getUserSyncs: ((function(SyncOptions, ServerResponse[], *, *): UserSync[])|*), buildRequests: (function(*, *): {method: string, data: string, url}), onTimeout: (function(*): boolean), gvlid: number, isBidRequestValid: ((function(BidRequest): (boolean))|*), onBidWon: (function(*): boolean)}}
+ * @type {BidderSpec & {storageAllowed: boolean}}
  */
 export const spec = {
   code: BIDDER_CODE,
@@ -359,8 +327,7 @@ export const spec = {
    * @return {Object} Info describing the request to the server.
    */
   buildRequests: function (validBidRequests, bidderRequest) {
-    // Create a clean openRTB request
-    const request = createOpenRtbRequest(validBidRequests, bidderRequest);
+    const request = converter.toORTB({ bidRequests: validBidRequests, bidderRequest: bidderRequest ?? {} });
     const options = {};
 
     return {
@@ -375,7 +342,7 @@ export const spec = {
    * Unpack the response from the server into a list of bids.
    *
    * @param {ServerResponse} serverResponse A successful response from the server.
-   * @return {Bid[]} An array of bids which were nested inside the server.
+   * @return {BidResponse[]} An array of bids which were nested inside the server.
    */
   interpretResponse: function (serverResponse, bidRequest) {
     const serverBody = serverResponse.body;
@@ -456,39 +423,51 @@ export const spec = {
    *
    * @param {SyncOptions} syncOptions Which user syncs are allowed?
    * @param {ServerResponse[]} serverResponses List of server's responses.
+   * @param {import('../src/types/consent/tcf.d.ts').TCFConsentData | null} gdprConsent
+   * @param {string | null} uspConsent
+   * @param {import('../src/types/consent/gpp.d.ts').GPPConsentData | null} gppConsent
+   * @param {boolean} coppa Whether COPPA applies.
    * @return {UserSync[]} The user syncs which should be dropped.
    */
   getUserSyncs: function (
     syncOptions,
     serverResponses,
     gdprConsent,
-    uspConsent
+    uspConsent,
+    gppConsent,
+    coppa
   ) {
     if (!serverResponses || serverResponses.length === 0) {
       return [];
     }
 
-    if (!syncOptions.iframeEnabled) {
+    if (!syncOptions.iframeEnabled || coppa === true) {
       return [];
     }
 
-    let params = '';
+    const params = new URLSearchParams();
     if (typeof gdprConsent?.gdprApplies === 'boolean') {
-      params += `?gdpr=${Number(gdprConsent.gdprApplies)}`;
+      params.set('gdpr', String(Number(gdprConsent.gdprApplies)));
     }
     if (typeof gdprConsent?.consentString === 'string') {
-      params += `${params ? '&' : '?'}gdpr_consent=${gdprConsent.consentString}`;
+      params.set('gdpr_consent', gdprConsent.consentString);
     }
 
-    if (uspConsent) {
-      params += `${params ? '&' : '?'}us_privacy=${encodeURIComponent(uspConsent)}`;
+    if (typeof uspConsent === 'string') {
+      params.set('us_privacy', uspConsent);
     }
-
-    if (document?.location?.search?.match(/pbs_debug=true/)) params += `&pbs_debug=true`;
+    if (typeof gppConsent?.gppString === 'string') {
+      params.set('gpp', gppConsent.gppString);
+    }
+    if (Array.isArray(gppConsent?.applicableSections)) {
+      params.set('gpp_sid', gppConsent.applicableSections.join(','));
+    }
+    if (document?.location?.search?.match(/pbs_debug=true/)) params.set('pbs_debug', 'true');
+    const query = params.toString();
 
     return [{
       type: 'iframe',
-      url: ORIGIN + COOKIE_SYNC_URI + params
+      url: ORIGIN + COOKIE_SYNC_URI + (query ? `?${query}` : '')
     }];
   },
 
